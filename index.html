@@ -20,6 +20,16 @@
     background: #1c1815;
   }
 
+  /* Nearest-neighbor upscaling instead of smooth/blurred interpolation
+     when zoomed past the image's native resolution. Comment this out
+     (or set PIXELATE_ON_DEEP_ZOOM to false below) if you'd rather have
+     the browser's default smooth blur instead. */
+  .leaflet-image-layer {
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+  }
+
   /* Leaflet chrome, restyled to feel like parchment/ink rather than default blue */
   .leaflet-control-zoom a {
     background: #f4ecd8;
@@ -153,6 +163,13 @@
 const MAP_IMAGE_URL = "images/haron_topological.png";
 
 /* ============================================================
+   DEV TOOLS TOGGLE
+   Set to false before sharing this page with actual users --
+   the picker is a mapmaking aid, not something end users need.
+   ============================================================ */
+const ENABLE_COORDINATE_PICKER = true;
+
+/* ============================================================
    2. GROUPS
    Defines marker categories: color + display label.
    Mirrors DataMaps' "groups" concept for an easy future migration.
@@ -183,6 +200,8 @@ const MARKERS = [
    ============================================================ */
 const map = L.map('map', {
   crs: L.CRS.Simple,
+  zoomSnap: 0,      // allow fractional zoom so the image can fit the screen EXACTLY, not rounded to the nearest whole step
+  zoomDelta: 0.5,   // smaller steps for the +/- buttons since we're not snapping to whole numbers
   attributionControl: false
 });
 
@@ -195,12 +214,19 @@ img.onload = function () {
   const bounds = [[0, 0], [h, w]];
   L.imageOverlay(MAP_IMAGE_URL, bounds).addTo(map);
 
-  // Figure out the zoom level that fits this specific image, then give
-  // ourselves a comfortable range above and below it rather than a
-  // hardcoded min/max that only worked for one particular image size.
+  // With CRS.Simple and bounds defined in raw image pixels, zoom level 0 is
+  // this image's native 1:1 resolution. Past that, the browser is stretching
+  // pixels rather than showing new detail -- but since we render that
+  // stretch as crisp nearest-neighbor (see .leaflet-image-layer CSS above)
+  // rather than a blur, it's fine to allow some extra zoom for inspecting
+  // detail. Raise/lower DEEP_ZOOM_LEVELS to taste, or set it to 0 to hard-cap
+  // at native resolution.
+  const NATIVE_ZOOM = 0;
+  const DEEP_ZOOM_LEVELS = 3;
   const fitZoom = map.getBoundsZoom(bounds);
-  map.setMinZoom(fitZoom - 5);
-  map.setMaxZoom(fitZoom + 5);
+  const maxZoom = Math.max(NATIVE_ZOOM + DEEP_ZOOM_LEVELS, fitZoom);
+  map.setMinZoom(fitZoom - 3);
+  map.setMaxZoom(maxZoom);
 
   map.fitBounds(bounds);
   map.setMaxBounds(bounds);
@@ -236,7 +262,7 @@ img.onload = function () {
   });
 
   buildLegend(layerGroups);
-  buildCoordinatePicker(w, h);
+  if (ENABLE_COORDINATE_PICKER) buildCoordinatePicker(w, h);
 };
 img.src = MAP_IMAGE_URL;
 
