@@ -183,12 +183,8 @@ const MARKERS = [
    ============================================================ */
 const map = L.map('map', {
   crs: L.CRS.Simple,
-  minZoom: -5,
-  maxZoom: 4,
   attributionControl: false
 });
-
-const REF_ZOOM = 0; // fixed zoom level used for all coordinate math below, so it never depends on the map's current/max zoom
 
 const img = new Image();
 img.onload = function () {
@@ -198,6 +194,14 @@ img.onload = function () {
   // Bounds in Leaflet's [y, x] pixel-space convention
   const bounds = [[0, 0], [h, w]];
   L.imageOverlay(MAP_IMAGE_URL, bounds).addTo(map);
+
+  // Figure out the zoom level that fits this specific image, then give
+  // ourselves a comfortable range above and below it rather than a
+  // hardcoded min/max that only worked for one particular image size.
+  const fitZoom = map.getBoundsZoom(bounds);
+  map.setMinZoom(fitZoom - 5);
+  map.setMaxZoom(fitZoom + 5);
+
   map.fitBounds(bounds);
   map.setMaxBounds(bounds);
 
@@ -208,9 +212,11 @@ img.onload = function () {
 
   MARKERS.forEach(m => {
     const groupInfo = GROUPS[m.group] || { color: "#333" };
-    const px = (m.x / 100) * w;
-    const py = (1 - m.y / 100) * h; // flip y so 0 = bottom, 100 = top, matching typical map conventions
-    const latlng = map.unproject([px, py], REF_ZOOM);
+    // With CRS.Simple, lat/lng ARE pixel coordinates directly (lat = row
+    // from bottom, lng = column from left) -- no projection math needed.
+    const lat = (m.y / 100) * h;
+    const lng = (m.x / 100) * w;
+    const latlng = L.latLng(lat, lng);
 
     const marker = L.circleMarker(latlng, {
       radius: 8,
@@ -248,9 +254,8 @@ function buildCoordinatePicker(w, h) {
   const readoutEl = document.querySelector('.coord-readout');
 
   function toPercent(latlng) {
-    const pt = map.project(latlng, REF_ZOOM);
-    const x = (pt.x / w) * 100;
-    const y = 100 - (pt.y / h) * 100; // flip so 0 = bottom, matching MARKERS convention
+    const x = (latlng.lng / w) * 100;
+    const y = (latlng.lat / h) * 100;
     return { x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10 };
   }
 
