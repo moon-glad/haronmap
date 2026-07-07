@@ -150,7 +150,7 @@
    Any resolution works — bounds are calculated automatically
    below from the image's real pixel dimensions.
    ============================================================ */
-const MAP_IMAGE_URL = "images/haron_topological.png";
+const MAP_IMAGE_URL = "https://upload.wikimedia.org/wikipedia/commons/e/e8/Old_map_parchment.jpg";
 
 /* ============================================================
    2. GROUPS
@@ -184,8 +184,11 @@ const MARKERS = [
 const map = L.map('map', {
   crs: L.CRS.Simple,
   minZoom: -5,
+  maxZoom: 4,
   attributionControl: false
 });
+
+const REF_ZOOM = 0; // fixed zoom level used for all coordinate math below, so it never depends on the map's current/max zoom
 
 const img = new Image();
 img.onload = function () {
@@ -207,7 +210,7 @@ img.onload = function () {
     const groupInfo = GROUPS[m.group] || { color: "#333" };
     const px = (m.x / 100) * w;
     const py = (1 - m.y / 100) * h; // flip y so 0 = bottom, 100 = top, matching typical map conventions
-    const latlng = map.unproject([px, py], map.getMaxZoom());
+    const latlng = map.unproject([px, py], REF_ZOOM);
 
     const marker = L.circleMarker(latlng, {
       radius: 8,
@@ -245,7 +248,7 @@ function buildCoordinatePicker(w, h) {
   const readoutEl = document.querySelector('.coord-readout');
 
   function toPercent(latlng) {
-    const pt = map.project(latlng, map.getMaxZoom());
+    const pt = map.project(latlng, REF_ZOOM);
     const x = (pt.x / w) * 100;
     const y = 100 - (pt.y / h) * 100; // flip so 0 = bottom, matching MARKERS convention
     return { x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10 };
