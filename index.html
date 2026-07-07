@@ -186,9 +186,13 @@ const ENABLE_COORDINATE_PICKER = true;
    Supported shapes: "circle", "square", "diamond", "triangle", "star", "pin"
    ============================================================ */
 const GROUPS = {
-  city:    { label: "Cities",     color: "#c0392b", shape: "pin" },
-  dungeon: { label: "Dungeons",   color: "#6c3483", shape: "square" },
-  poi:     { label: "Points of Interest", color: "#1e8449", shape: "triangle" }
+  capital: { label: "Capitals",   color: "#B4313D", shape: "star"        },
+  city:    { label: "Cities",     color: "#FFB961", shape: "diamond"     },
+  fort:    { label: "Fortifications", color: "#ED894E",  shape: "square" },
+  town:    { label: "Towns",      color: "#FFEAAE",  shape: "circle"     },
+  village: { label: "Villages",      color: "#FFFFFF",  shape: "triangle"},
+  dungeon: { label: "Dungeons",   color: "#6c3483", shape: "star"        },
+  poi:     { label: "Points of Interest", color: "#1e8449", shape: "pin" }
 };
 
 /* ============================================================
@@ -208,7 +212,16 @@ const MARKERS = [
   { id: "m1", x: 30, y: 40, group: "city",    name: "Kingsreach",      description: "Capital of the Eastern Realm, seat of the Silver Throne.", link: "" },
   { id: "m2", x: 62, y: 25, group: "city",    name: "Port Callow",     description: "A busy trade harbor known for its lighthouse guild.", link: "", shape: "star" },
   { id: "m3", x: 48, y: 65, group: "dungeon", name: "The Sunken Crypt",description: "An old tomb complex, said to be cursed.", link: "" },
-  { id: "m4", x: 75, y: 55, group: "poi",     name: "Whispering Falls",description: "A waterfall rumored to carry voices of the dead.", link: "" }
+  { id: "m4", x: 75, y: 55, group: "poi",     name: "Whispering Falls",description: "A waterfall rumored to carry voices of the dead.", link: "" },
+  
+  { id: "m1", x: 47.6, y: 21.7, group: "city", name: "Unnamed", description: "", link: "" },
+  { id: "m2", x: 43, y: 24.6, group: "city", name: "Unnamed", description: "", link: "" },
+  { id: "m3", x: 35.5, y: 22.6, group: "city", name: "Unnamed", description: "", link: "" },
+  { id: "m4", x: 64.5, y: 23.1, group: "city", name: "Unnamed", description: "", link: "" },
+  { id: "m5", x: 56.8, y: 24.1, group: "city", name: "Unnamed", description: "", link: "" },
+  { id: "m6", x: 57.5, y: 32.2, group: "city", name: "Unnamed", description: "", link: "" },
+  { id: "m7", x: 57.7, y: 39.1, group: "city", name: "Unnamed", description: "", link: "" },
+  { id: "m8", x: 57.4, y: 43.7, group: "city", name: "Unnamed", description: "", link: "" }
 ];
 
 /* ============================================================
