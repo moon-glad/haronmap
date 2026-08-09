@@ -349,8 +349,9 @@ img.src = MAP_IMAGE_URL;
 
 function buildCoordinatePicker(w, h) {
   const picked = [];           // finished single points
-  const finishedBorders = [];  // finished border/region shapes: { points, closed }
-  let drawing = [];            // in-progress border points (percent coords)
+  const finishedBorders = [];  // finished border/region shapes: { points, closed } where points is [part1, part2, ...]
+  let drawing = [];            // in-progress points for the CURRENT part (percent coords)
+  let currentParts = [];       // parts already closed off with "New part", waiting to be Finished together
   let mode = 'point';          // 'point' | 'border'
 
   const previewLayer = L.layerGroup().addTo(map);
@@ -378,17 +379,36 @@ function buildCoordinatePicker(w, h) {
 
   function redrawPreview() {
     previewLayer.clearLayers();
-    if (drawing.length === 0) return;
-    const latlngs = drawing.map(p => toLatLng(p.x, p.y, w, h));
-    if (latlngs.length > 1) {
-      L.polyline(latlngs, { color: '#2a6ebb', weight: 2, dashArray: '4,3', interactive: false }).addTo(previewLayer);
-    }
-    drawing.forEach(p => {
-      L.circleMarker(toLatLng(p.x, p.y, w, h), {
-        radius: 4, color: '#2a6ebb', weight: 2, fillColor: '#fff', fillOpacity: 1, interactive: false
-      }).addTo(previewLayer);
+
+    // Parts already locked in via "New part" -- shown solid/green so
+    // they read as "committed" versus the part still being drawn.
+    currentParts.forEach(part => {
+      const latlngs = part.map(p => toLatLng(p.x, p.y, w, h));
+      if (latlngs.length > 1) {
+        L.polyline(latlngs, { color: '#2e7d46', weight: 2, interactive: false }).addTo(previewLayer);
+      }
+      part.forEach(p => {
+        L.circleMarker(toLatLng(p.x, p.y, w, h), {
+          radius: 4, color: '#2e7d46', weight: 2, fillColor: '#fff', fillOpacity: 1, interactive: false
+        }).addTo(previewLayer);
+      });
     });
+
+    // The part currently being drawn -- dashed blue.
+    if (drawing.length > 0) {
+      const latlngs = drawing.map(p => toLatLng(p.x, p.y, w, h));
+      if (latlngs.length > 1) {
+        L.polyline(latlngs, { color: '#2a6ebb', weight: 2, dashArray: '4,3', interactive: false }).addTo(previewLayer);
+      }
+      drawing.forEach(p => {
+        L.circleMarker(toLatLng(p.x, p.y, w, h), {
+          radius: 4, color: '#2a6ebb', weight: 2, fillColor: '#fff', fillOpacity: 1, interactive: false
+        }).addTo(previewLayer);
+      });
+    }
+
     document.getElementById('drawing-count').textContent = drawing.length;
+    document.getElementById('parts-count').textContent = currentParts.length;
   }
 
   // Main panel
@@ -414,10 +434,13 @@ function buildCoordinatePicker(w, h) {
       </div>
 
       <div id="picker-border-section" style="display:none">
-        <div class="picker-subheader">Drawing (<span id="drawing-count">0</span> pts)</div>
+        <div class="picker-subheader">Drawing (<span id="drawing-count">0</span> pts &middot; <span id="parts-count">0</span> parts saved)</div>
         <div class="picker-actions">
           <button id="border-undo">Undo point</button>
           <button id="border-cancel">Cancel</button>
+        </div>
+        <div class="picker-actions">
+          <button id="border-new-part" title="Lock in the current part and start drawing a new disconnected piece (for exclaves)">New part</button>
         </div>
         <div class="picker-actions">
           <button id="border-finish-region">Finish region</button>
@@ -471,9 +494,20 @@ function buildCoordinatePicker(w, h) {
   }
 
   // -- Border/region mode --
+  function partsOf(b) {
+    return Array.isArray(b.points[0]) ? b.points : [b.points];
+  }
+
+  function partToStr(part) {
+    return `[ ${part.map(p => `{ x: ${p.x}, y: ${p.y} }`).join(', ')} ]`;
+  }
+
   function borderSnippetFor(b, idx) {
-    const ptsStr = b.points.map(p => `{ x: ${p.x}, y: ${p.y} }`).join(', ');
-    return `{ id: "b${idx}", name: "Unnamed", description: "", link: "", color: "#5a3a2a", closed: ${b.closed}, weight: 2, dashArray: null, fillOpacity: 0.08, points: [ ${ptsStr} ] }`;
+    const parts = partsOf(b);
+    const pointsStr = parts.length === 1
+      ? partToStr(parts[0])
+      : `[\n      ${parts.map(partToStr).join(',\n      ')}\n    ]`;
+    return `{ id: "b${idx}", name: "Unnamed", description: "", link: "", color: "#5a3a2a", closed: ${b.closed}, weight: 2, dashArray: null, fillOpacity: 0.08, points: ${pointsStr} }`;
   }
 
   function renderBorderList() {
@@ -485,9 +519,12 @@ function buildCoordinatePicker(w, h) {
     }
     list.innerHTML = '';
     finishedBorders.forEach((b, idx) => {
+      const parts = partsOf(b);
+      const totalPts = parts.reduce((sum, p) => sum + p.length, 0);
+      const partsLabel = parts.length > 1 ? `${parts.length} parts, ` : '';
       const item = document.createElement('div');
       item.className = 'picker-item';
-      item.textContent = `${b.closed ? 'Region' : 'Line'} ${idx + 1} (${b.points.length} pts)`;
+      item.textContent = `${b.closed ? 'Region' : 'Line'} ${idx + 1} (${partsLabel}${totalPts} pts)`;
       item.title = 'Click to copy this border object';
       item.onclick = () => navigator.clipboard.writeText(borderSnippetFor(b, idx + 1));
       list.appendChild(item);
@@ -495,13 +532,27 @@ function buildCoordinatePicker(w, h) {
   }
 
   function finishDrawing(closed) {
-    const minPoints = closed ? 3 : 2;
-    if (drawing.length < minPoints) {
-      alert(`Need at least ${minPoints} points to finish a ${closed ? 'region' : 'line'}.`);
+    const parts = currentParts.slice();
+    if (drawing.length > 0) parts.push(drawing.slice());
+
+    if (parts.length === 0) {
+      alert('Place at least one point first.');
       return;
     }
-    finishedBorders.push({ points: drawing.slice(), closed });
+    const minPoints = closed ? 3 : 2;
+    const tooShort = parts.find(part => part.length < minPoints);
+    if (tooShort) {
+      alert(`Each part needs at least ${minPoints} points to finish a ${closed ? 'region' : 'line'}.`);
+      return;
+    }
+
+    // Store as a flat array for a single part (backward compatible with
+    // plain regions), or a nested array when there's more than one part
+    // (an exclave situation) -- matches what fantasy-map.html expects.
+    const points = parts.length === 1 ? parts[0] : parts;
+    finishedBorders.push({ points, closed });
     drawing = [];
+    currentParts = [];
     redrawPreview();
     renderBorderList();
   }
@@ -527,9 +578,26 @@ function buildCoordinatePicker(w, h) {
       picked.length = 0;
       renderPointList();
     } else if (id === 'border-undo') {
-      drawing.pop();
+      // Undo the last point of the part in progress; if that part is
+      // now empty, pull the previous "New part" back open for editing.
+      if (drawing.length > 0) {
+        drawing.pop();
+      } else if (currentParts.length > 0) {
+        drawing = currentParts.pop();
+      }
       redrawPreview();
     } else if (id === 'border-cancel') {
+      drawing = [];
+      currentParts = [];
+      redrawPreview();
+    } else if (id === 'border-new-part') {
+      // Lock in the current part (e.g. a region's main body) and start
+      // a fresh, disconnected part -- this is how you build an exclave.
+      if (drawing.length < 2) {
+        alert('Add at least 2 points to this part before starting a new one.');
+        return;
+      }
+      currentParts.push(drawing.slice());
       drawing = [];
       redrawPreview();
     } else if (id === 'border-finish-region') {
