@@ -19,7 +19,7 @@ const MAP_IMAGE_URL = "images/haron_topological.png";
    Set to false before sharing this page with actual users --
    the picker is a mapmaking aid, not something end users need.
    ------------------------------------------------------------ */
-const ENABLE_COORDINATE_PICKER = true;
+const ENABLE_COORDINATE_PICKER = "true";
 
 /* ------------------------------------------------------------
    2. GROUPS
