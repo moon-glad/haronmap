@@ -173,6 +173,48 @@
     color: #7a6b55;
     font-style: italic;
   }
+
+  /* Data-error warning banner -- appears if MARKERS/BORDERS has a
+     malformed entry, without blocking the rest of the map/picker. */
+  .data-warning-banner {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 10000;
+    background: #5a1a1a;
+    color: #f8e8e0;
+    font-family: 'Menlo', 'Consolas', monospace;
+    font-size: 0.8em;
+    padding: 8px 36px 8px 12px;
+    max-height: 35vh;
+    overflow-y: auto;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+  }
+  .data-warning-banner strong {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 1.05em;
+  }
+  .data-warning-banner ul {
+    margin: 0;
+    padding-left: 18px;
+  }
+  .data-warning-banner li {
+    margin-bottom: 2px;
+  }
+  .data-warning-banner .warning-dismiss {
+    position: absolute;
+    top: 6px;
+    right: 10px;
+    cursor: pointer;
+    color: #f8e8e0;
+    font-family: sans-serif;
+    font-size: 1.1em;
+    line-height: 1;
+    background: none;
+    border: none;
+  }
 </style>
 </head>
 <body>
@@ -249,6 +291,35 @@ const map = L.map('map', {
 });
 
 const img = new Image();
+/* ============================================================
+   DATA ERROR FAILSTATE
+   If a MARKERS or BORDERS entry is malformed (bad JS, a missing
+   comma between array parts, etc.), we don't want that to take
+   down the whole map -- everything rendered before/after the bad
+   entry should keep working, including the picker. Instead we
+   skip just that entry and surface a visible warning banner.
+   ============================================================ */
+let dataWarnings = [];
+function reportDataWarning(message) {
+  console.error('[map data]', message);
+  dataWarnings.push(message);
+
+  let banner = document.getElementById('data-warning-banner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'data-warning-banner';
+    banner.className = 'data-warning-banner';
+    document.body.appendChild(banner);
+  }
+  const label = dataWarnings.length > 1 ? `${dataWarnings.length} data problems found` : 'Data problem found';
+  banner.innerHTML = `
+    <button class="warning-dismiss" title="Dismiss (will reappear on reload until fixed)">&times;</button>
+    <strong>&#9888; ${label} -- these entries were skipped:</strong>
+    <ul>${dataWarnings.map(m => `<li>${m}</li>`).join('')}</ul>
+  `;
+  banner.querySelector('.warning-dismiss').onclick = () => banner.remove();
+}
+
 img.onload = function () {
   const w = img.naturalWidth;
   const h = img.naturalHeight;
@@ -279,71 +350,100 @@ img.onload = function () {
     layerGroups[key] = L.layerGroup().addTo(map);
   });
 
-  MARKERS.forEach(m => {
-    const groupInfo = GROUPS[m.group] || { color: "#333" };
-    const latlng = toLatLng(m.x, m.y, w, h);
+  MARKERS.forEach((m, idx) => {
+    try {
+      const groupInfo = GROUPS[m.group] || { color: "#333" };
+      const latlng = toLatLng(m.x, m.y, w, h);
 
-    const marker = L.marker(latlng, {
-      icon: makeShapeIcon(m.shape || groupInfo.shape || "circle", groupInfo.color)
-    });
+      const marker = L.marker(latlng, {
+        icon: makeShapeIcon(m.shape || groupInfo.shape || "circle", groupInfo.color)
+      });
 
-    const linkHtml = m.link ? `<a href="${m.link}">More details &rarr;</a>` : "";
-    marker.bindPopup(
-      `<div class="marker-popup"><h3>${m.name}</h3><p>${m.description}</p>${linkHtml}</div>`
-    );
+      const linkHtml = m.link ? `<a href="${m.link}">More details &rarr;</a>` : "";
+      marker.bindPopup(
+        `<div class="marker-popup"><h3>${m.name}</h3><p>${m.description}</p>${linkHtml}</div>`
+      );
 
-    marker.on('click', (e) => L.DomEvent.stopPropagation(e));
-    marker.addTo(layerGroups[m.group]);
+      marker.on('click', (e) => L.DomEvent.stopPropagation(e));
+      marker.addTo(layerGroups[m.group]);
+    } catch (err) {
+      reportDataWarning(`Marker "${m && (m.name || m.id) || '#' + (idx + 1)}": ${err.message}`);
+    }
   });
 
   const borderLayer = L.layerGroup().addTo(map);
-  BORDERS.forEach(b => {
-    // `points` can be a flat array of {x,y} (one contiguous shape) OR an
-    // array of such arrays (multiple disconnected parts of the SAME region
-    // -- e.g. an exclave). Both render as a single interactive layer with
-    // shared style, popup, and hover behavior.
-    const parts = Array.isArray(b.points[0]) ? b.points : [b.points];
-    const partsLatLngs = parts.map(part => part.map(p => toLatLng(p.x, p.y, w, h)));
+  BORDERS.forEach((b, idx) => {
+    try {
+      const label = b && (b.name || b.id) || `#${idx + 1}`;
 
-    const baseStyle = {
-      color: b.color || "#5a3a2a",
-      weight: b.weight || 2,
-      dashArray: b.dashArray || null,
-      fill: !!b.closed,
-      fillColor: b.color || "#5a3a2a",
-      fillOpacity: b.closed ? (b.fillOpacity ?? 0.08) : 0
-    };
-    const hoverStyle = {
-      weight: (b.weight || 2) + 1.5,
-      fillOpacity: b.closed ? (b.fillOpacity ?? 0.08) * 3.5 : 0
-    };
+      // `points` can be a flat array of {x,y} (one contiguous shape) OR an
+      // array of such arrays (multiple disconnected parts of the SAME region
+      // -- e.g. an exclave). Both render as a single interactive layer with
+      // shared style, popup, and hover behavior.
+      const parts = Array.isArray(b.points[0]) ? b.points : [b.points];
 
-    // Polygon expects [ [outerRing, ...holes], [outerRing, ...holes], ... ]
-    // for multi-part shapes; each of our parts has no holes, so wrap each
-    // ring in its own single-element array. Polyline just wants an array
-    // of line-strings, which partsLatLngs already is.
-    const layer = b.closed
-      ? L.polygon(partsLatLngs.map(ring => [ring]), baseStyle)
-      : L.polyline(partsLatLngs, baseStyle);
+      // Catches the classic typo: a missing comma between two part-arrays
+      // silently turns "[...] [...]" into array INDEXING rather than two
+      // separate elements, leaving one "part" as undefined. A generic
+      // TypeError from that is confusing, so we check for it explicitly.
+      parts.forEach((part, partIdx) => {
+        if (!Array.isArray(part)) {
+          throw new Error(
+            `part ${partIdx + 1} of "points" is ${part === undefined ? 'undefined' : typeof part} ` +
+            `instead of an array of points -- check for a missing comma between two part-arrays just above this spot`
+          );
+        }
+      });
 
-    // Translucent hover highlight -- makes a region feel clickable/alive
-    // rather than just a static outline.
-    layer.on('mouseover', () => layer.setStyle(hoverStyle));
-    layer.on('mouseout', () => layer.setStyle(baseStyle));
+      const partsLatLngs = parts.map(part => part.map(p => toLatLng(p.x, p.y, w, h)));
 
-    if (b.name || b.description) {
-      const linkHtml = b.link ? `<a href="${b.link}">More details &rarr;</a>` : "";
-      layer.bindPopup(
-        `<div class="marker-popup"><h3>${b.name || ""}</h3><p>${b.description || ""}</p>${linkHtml}</div>`
-      );
+      const baseStyle = {
+        color: b.color || "#5a3a2a",
+        weight: b.weight || 2,
+        dashArray: b.dashArray || null,
+        fill: !!b.closed,
+        fillColor: b.color || "#5a3a2a",
+        fillOpacity: b.closed ? (b.fillOpacity ?? 0.08) : 0
+      };
+      const hoverStyle = {
+        weight: (b.weight || 2) + 1.5,
+        fillOpacity: b.closed ? (b.fillOpacity ?? 0.08) * 3.5 : 0
+      };
+
+      // Polygon expects [ [outerRing, ...holes], [outerRing, ...holes], ... ]
+      // for multi-part shapes; each of our parts has no holes, so wrap each
+      // ring in its own single-element array. Polyline just wants an array
+      // of line-strings, which partsLatLngs already is.
+      const layer = b.closed
+        ? L.polygon(partsLatLngs.map(ring => [ring]), baseStyle)
+        : L.polyline(partsLatLngs, baseStyle);
+
+      // Translucent hover highlight -- makes a region feel clickable/alive
+      // rather than just a static outline.
+      layer.on('mouseover', () => layer.setStyle(hoverStyle));
+      layer.on('mouseout', () => layer.setStyle(baseStyle));
+
+      if (b.name || b.description) {
+        const linkHtml = b.link ? `<a href="${b.link}">More details &rarr;</a>` : "";
+        layer.bindPopup(
+          `<div class="marker-popup"><h3>${b.name || ""}</h3><p>${b.description || ""}</p>${linkHtml}</div>`
+        );
+      }
+
+      layer.on('click', (e) => L.DomEvent.stopPropagation(e));
+      layer.addTo(borderLayer);
+    } catch (err) {
+      const label = b && (b.name || b.id) || `#${idx + 1}`;
+      reportDataWarning(`Border "${label}": ${err.message}`);
     }
-
-    layer.on('click', (e) => L.DomEvent.stopPropagation(e));
-    layer.addTo(borderLayer);
   });
 
-  buildLegend(layerGroups, borderLayer);
-  if (ENABLE_COORDINATE_PICKER) buildCoordinatePicker(w, h);
+  try {
+    buildLegend(layerGroups, borderLayer);
+    if (ENABLE_COORDINATE_PICKER) buildCoordinatePicker(w, h);
+  } catch (err) {
+    reportDataWarning(`Legend/picker setup: ${err.message}`);
+  }
 };
 img.src = MAP_IMAGE_URL;
 
