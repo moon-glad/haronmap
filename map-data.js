@@ -94,7 +94,7 @@ const MARKERS = [
   { id: "m40", x: 53.2, y: 40.4, group: "city", name: "Unnamed", description: "", link: "" },
   { id: "m41", x: 51.9, y: 36.7, group: "city", name: "Unnamed", description: "", link: "" },
   { id: "m42", x: 49.1, y: 36, group: "city", name: "Unnamed", description: "", link: "" },
-  { id: "m43", x: 50.8, y: 28.7, group: "city", name: "Unnamed", description: "", link: "" },
+  { id: "m43", x: 50.8, y: 28.7, group: "city", name: "Maril", description: "", link: "" },
   { id: "m44", x: 54.6, y: 36.4, group: "city", name: "Unnamed", description: "", link: "" },
   { id: "m45", x: 30.2, y: 6.7, group: "city", name: "Inoth", description: "Home to the Inoth School of Swordmasters.", link: "" },
   { id: "m46", x: 63.3, y: 19.9, group: "city", name: "Acklen", description: "", link: "" },
