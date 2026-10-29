@@ -87,7 +87,7 @@ const MARKERS = [
   { id: "m33", x: 41.8, y: 21.4, group: "city", name: "Unnamed", description: "", link: "" },
   { id: "m34", x: 50.3, y: 53.4, group: "city", name: "Unnamed", description: "", link: "" },
   { id: "m35", x: 47.1, y: 43.9, group: "city", name: "Unnamed", description: "", link: "" },
-  { id: "m36", x: 44.4, y: 35.6, group: "city", name: "Unnamed", description: "", link: "" },
+  { id: "m36", x: 44.4, y: 35.6, group: "city", name: "Harst", description: "", link: "" },
   { id: "m37", x: 53.6, y: 50.1, group: "city", name: "Unnamed", description: "", link: "" },
   { id: "m38", x: 55.7, y: 46.1, group: "city", name: "Unnamed", description: "", link: "" },
   { id: "m39", x: 57.2, y: 48.6, group: "city", name: "Unnamed", description: "", link: "" },
