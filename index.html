@@ -133,6 +133,34 @@
     gap: 4px;
     cursor: pointer;
   }
+  .picker-panel .picker-clickthrough {
+    padding: 6px 10px;
+    border-bottom: 1px solid #a8926f;
+  }
+  .picker-panel .picker-clickthrough label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+  }
+  .picker-panel select {
+    width: calc(100% - 20px);
+    margin: 4px 10px;
+    font-size: 0.85em;
+    padding: 3px;
+    border: 1px solid #a8926f;
+    border-radius: 3px;
+    background: #fffdf7;
+  }
+  .picker-panel .edit-status {
+    padding: 0 10px 4px 10px;
+    font-size: 0.85em;
+    color: #5a4a38;
+  }
+  .leaflet-div-icon.edit-vertex-icon {
+    background: transparent;
+    border: none;
+  }
   .picker-panel .picker-subheader {
     padding: 8px 10px 2px 10px;
     font-weight: bold;
@@ -222,6 +250,7 @@
 <div id="map"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js"></script>
 <script src="map-data.js"></script>
 <script>
 
@@ -324,6 +353,11 @@ img.onload = function () {
   const w = img.naturalWidth;
   const h = img.naturalHeight;
 
+  // Shared mutable state between marker/border click handlers and the
+  // picker UI -- an object (not a primitive) so closures everywhere see
+  // live updates when the picker's "Click-through" checkbox is toggled.
+  const editorState = { clickThrough: false };
+
   // Bounds in Leaflet's [y, x] pixel-space convention
   const bounds = [[0, 0], [h, w]];
   L.imageOverlay(MAP_IMAGE_URL, bounds).addTo(map);
@@ -360,11 +394,16 @@ img.onload = function () {
       });
 
       const linkHtml = m.link ? `<a href="${m.link}">More details &rarr;</a>` : "";
-      marker.bindPopup(
-        `<div class="marker-popup"><h3>${m.name}</h3><p>${m.description}</p>${linkHtml}</div>`
-      );
+      const popupContent = `<div class="marker-popup"><h3>${m.name}</h3><p>${m.description}</p>${linkHtml}</div>`;
 
-      marker.on('click', (e) => L.DomEvent.stopPropagation(e));
+      // Click-through aware: when the picker's "Click-through" toggle is on,
+      // clicking a marker does NOT open its popup and DOES let the click
+      // bubble to the map (so it registers as a new point/vertex instead).
+      marker.on('click', (e) => {
+        if (editorState.clickThrough) return;
+        L.DomEvent.stopPropagation(e);
+        L.popup().setLatLng(e.latlng).setContent(popupContent).openOn(map);
+      });
       marker.addTo(layerGroups[m.group]);
     } catch (err) {
       reportDataWarning(`Marker "${m && (m.name || m.id) || '#' + (idx + 1)}": ${err.message}`);
@@ -372,15 +411,109 @@ img.onload = function () {
   });
 
   const borderLayer = L.layerGroup().addTo(map);
-  BORDERS.forEach((b, idx) => {
+
+  // -- Hierarchy support (nested borders, e.g. country > state > county) --
+  // A border can optionally set `parent: "someOtherBorderId"`. We use that
+  // to (a) draw parents first so children render on top and stay
+  // clickable, and (b) build a breadcrumb for the popup.
+  const bordersById = {};
+  BORDERS.forEach(b => { if (b.id) bordersById[b.id] = b; });
+
+  const depthCache = new Map();
+  function borderDepth(b) {
+    if (!b || !b.id) return 0;
+    if (depthCache.has(b.id)) return depthCache.get(b.id);
+    depthCache.set(b.id, 0); // cycle guard while resolving
+    const parent = b.parent ? bordersById[b.parent] : null;
+    const depth = parent ? 1 + borderDepth(parent) : 0;
+    depthCache.set(b.id, depth);
+    return depth;
+  }
+
+  function borderBreadcrumb(b) {
+    const chain = [];
+    const seen = new Set();
+    let cur = b;
+    while (cur && !seen.has(cur.id)) {
+      chain.unshift(cur.name || cur.id || '');
+      seen.add(cur.id);
+      cur = cur.parent ? bordersById[cur.parent] : null;
+    }
+    return chain.join(' &rsaquo; ');
+  }
+
+  // -- Auto-generated parent borders (e.g. a country outline computed from
+  //    its states) -- a border with `autoGenerate: true` and no `points`
+  //    gets its shape computed as the union of every border whose `parent`
+  //    points at it, via Turf.js.
+  function ringToTurfCoords(part) {
+    const coords = part.map(p => [p.x, p.y]);
+    const first = coords[0], last = coords[coords.length - 1];
+    if (first && last && (first[0] !== last[0] || first[1] !== last[1])) coords.push([first[0], first[1]]);
+    return coords;
+  }
+
+  function partsToTurfPolygon(parts) {
+    // MultiPolygon: each part is its own disjoint polygon, no holes.
+    return turf.multiPolygon(parts.map(part => [ringToTurfCoords(part)]));
+  }
+
+  function turfGeometryToParts(geom) {
+    const polygons = geom.type === 'Polygon' ? [geom.coordinates] : geom.coordinates;
+    return polygons.map(rings => rings[0].slice(0, -1).map(([x, y]) => ({ x, y })));
+  }
+
+  const resolvedPartsCache = new Map();
+  const resolveInProgress = new Set();
+  function resolveParts(b) {
+    if (resolvedPartsCache.has(b.id)) return resolvedPartsCache.get(b.id);
+    if (b.id && resolveInProgress.has(b.id)) {
+      throw new Error(`circular parent/autoGenerate reference involving "${b.id}"`);
+    }
+    if (b.id) resolveInProgress.add(b.id);
+
+    let parts;
+    if (b.autoGenerate) {
+      if (typeof turf === 'undefined') {
+        throw new Error(`autoGenerate requires Turf.js, which failed to load (check network/CDN access)`);
+      }
+      const children = BORDERS.filter(c => c.parent === b.id);
+      if (children.length === 0) {
+        throw new Error(`autoGenerate is true but no other border has parent: "${b.id}"`);
+      }
+      const childPolys = children.map(c => partsToTurfPolygon(resolveParts(c)));
+      let unioned = childPolys[0];
+      for (let i = 1; i < childPolys.length; i++) {
+        const next = turf.union(unioned, childPolys[i]);
+        if (!next) throw new Error(`turf.union failed while merging children of "${b.id}" (check for invalid/self-intersecting geometry)`);
+        unioned = next;
+      }
+      parts = turfGeometryToParts(unioned.geometry);
+    } else {
+      if (!b.points) {
+        throw new Error(`no "points" and autoGenerate is not set -- nothing to render`);
+      }
+      parts = Array.isArray(b.points[0]) ? b.points : [b.points];
+    }
+
+    if (b.id) resolveInProgress.delete(b.id);
+    if (b.id) resolvedPartsCache.set(b.id, parts);
+    return parts;
+  }
+
+  const sortedBorders = BORDERS
+    .map((b, idx) => ({ b, idx })) // keep original index for warning messages
+    .sort((x, y) => borderDepth(x.b) - borderDepth(y.b));
+
+  sortedBorders.forEach(({ b, idx }) => {
     try {
       const label = b && (b.name || b.id) || `#${idx + 1}`;
 
       // `points` can be a flat array of {x,y} (one contiguous shape) OR an
       // array of such arrays (multiple disconnected parts of the SAME region
-      // -- e.g. an exclave). Both render as a single interactive layer with
-      // shared style, popup, and hover behavior.
-      const parts = Array.isArray(b.points[0]) ? b.points : [b.points];
+      // -- e.g. an exclave) OR, if `autoGenerate` is set, computed on the
+      // fly as the union of this border's children.
+      const parts = resolveParts(b);
 
       // Catches the classic typo: a missing comma between two part-arrays
       // silently turns "[...] [...]" into array INDEXING rather than two
@@ -423,14 +556,20 @@ img.onload = function () {
       layer.on('mouseover', () => layer.setStyle(hoverStyle));
       layer.on('mouseout', () => layer.setStyle(baseStyle));
 
+      let popupContent = null;
       if (b.name || b.description) {
         const linkHtml = b.link ? `<a href="${b.link}">More details &rarr;</a>` : "";
-        layer.bindPopup(
-          `<div class="marker-popup"><h3>${b.name || ""}</h3><p>${b.description || ""}</p>${linkHtml}</div>`
-        );
+        const titleHtml = b.parent ? borderBreadcrumb(b) : (b.name || "");
+        popupContent = `<div class="marker-popup"><h3>${titleHtml}</h3><p>${b.description || ""}</p>${linkHtml}</div>`;
       }
 
-      layer.on('click', (e) => L.DomEvent.stopPropagation(e));
+      // Click-through aware, same as markers: with the toggle on, clicking
+      // a region doesn't open its popup and lets the click reach the map.
+      layer.on('click', (e) => {
+        if (editorState.clickThrough) return;
+        L.DomEvent.stopPropagation(e);
+        if (popupContent) L.popup().setLatLng(e.latlng).setContent(popupContent).openOn(map);
+      });
       layer.addTo(borderLayer);
     } catch (err) {
       const label = b && (b.name || b.id) || `#${idx + 1}`;
@@ -440,19 +579,28 @@ img.onload = function () {
 
   try {
     buildLegend(layerGroups, borderLayer);
-    if (ENABLE_COORDINATE_PICKER) buildCoordinatePicker(w, h);
+    if (ENABLE_COORDINATE_PICKER) buildCoordinatePicker(w, h, editorState);
   } catch (err) {
     reportDataWarning(`Legend/picker setup: ${err.message}`);
   }
 };
 img.src = MAP_IMAGE_URL;
 
-function buildCoordinatePicker(w, h) {
+function buildCoordinatePicker(w, h, editorState) {
   const picked = [];           // finished single points
   const finishedBorders = [];  // finished border/region shapes: { points, closed } where points is [part1, part2, ...]
   let drawing = [];            // in-progress points for the CURRENT part (percent coords)
   let currentParts = [];       // parts already closed off with "New part", waiting to be Finished together
-  let mode = 'point';          // 'point' | 'border'
+  let mode = 'point';          // 'point' | 'border' | 'edit'
+
+  // -- Edit mode state --
+  let editTarget = null;       // the BORDERS entry currently loaded for editing
+  let editParts = [];          // working copy of its points (percent coords), edited in place
+  let editSelected = null;     // { partIndex, pointIndex } of the selected vertex, or null
+  const editVertexLayer = L.layerGroup().addTo(map);
+  const editBorderOptions = '<option value="">-- choose a border to edit --</option>' + BORDERS.map(b =>
+    `<option value="${b.id}">${(b.name || b.id)}${b.autoGenerate ? ' (auto-generated, read-only)' : ''}</option>`
+  ).join('');
 
   const previewLayer = L.layerGroup().addTo(map);
 
@@ -517,9 +665,13 @@ function buildCoordinatePicker(w, h) {
     const div = L.DomUtil.create('div', 'picker-panel');
     div.innerHTML = `
       <div class="picker-header">Map Tools</div>
+      <div class="picker-clickthrough">
+        <label><input type="checkbox" id="clickthrough-toggle"> Click-through (ignore marker/border popups while placing points)</label>
+      </div>
       <div class="picker-mode">
         <label><input type="radio" name="picker-mode" value="point" checked> Points</label>
         <label><input type="radio" name="picker-mode" value="border"> Border</label>
+        <label><input type="radio" name="picker-mode" value="edit"> Edit</label>
       </div>
 
       <div id="picker-point-section">
@@ -555,11 +707,28 @@ function buildCoordinatePicker(w, h) {
           <div class="picker-empty">Click to place points, then Finish.</div>
         </div>
       </div>
+
+      <div id="picker-edit-section" style="display:none">
+        <select id="edit-border-select">${editBorderOptions}</select>
+        <div class="edit-status" id="edit-status">Choose a border above to edit it.</div>
+        <div class="picker-actions">
+          <button id="edit-delete-point">Delete selected point</button>
+          <button id="edit-reset">Reset</button>
+        </div>
+        <div class="picker-actions">
+          <button id="edit-copy">Copy updated border</button>
+        </div>
+      </div>
     `;
     L.DomEvent.disableClickPropagation(div);
     return div;
   };
   panel.addTo(map);
+
+  // -- Click-through toggle --
+  document.getElementById('clickthrough-toggle').addEventListener('change', (e) => {
+    editorState.clickThrough = e.target.checked;
+  });
 
   // -- Mode switching --
   document.querySelectorAll('input[name="picker-mode"]').forEach(radio => {
@@ -567,6 +736,12 @@ function buildCoordinatePicker(w, h) {
       mode = e.target.value;
       document.getElementById('picker-point-section').style.display = mode === 'point' ? '' : 'none';
       document.getElementById('picker-border-section').style.display = mode === 'border' ? '' : 'none';
+      document.getElementById('picker-edit-section').style.display = mode === 'edit' ? '' : 'none';
+      if (mode === 'edit') {
+        redrawEditHandles();
+      } else {
+        editVertexLayer.clearLayers();
+      }
     });
   });
 
@@ -657,15 +832,150 @@ function buildCoordinatePicker(w, h) {
     renderBorderList();
   }
 
-  // -- Map click: add a point or a border vertex depending on mode --
+  // -- Edit mode: modify an existing border's vertices directly --
+  function vertexIcon(selected) {
+    const color = selected ? '#ff9800' : '#2a6ebb';
+    return L.divIcon({
+      className: 'edit-vertex-icon',
+      html: `<div style="width:10px;height:10px;border-radius:50%;background:${color};border:2px solid #fff;box-shadow:0 0 2px rgba(0,0,0,0.7);"></div>`,
+      iconSize: [14, 14],
+      iconAnchor: [7, 7]
+    });
+  }
+
+  function updateEditStatus() {
+    const el = document.getElementById('edit-status');
+    if (!editTarget) {
+      el.textContent = 'Choose a border above to edit it.';
+      return;
+    }
+    const totalPts = editParts.reduce((sum, p) => sum + p.length, 0);
+    const selText = editSelected ? `point ${editSelected.pointIndex + 1} of part ${editSelected.partIndex + 1} selected` : 'no point selected';
+    el.innerHTML = `Editing <strong>${editTarget.name || editTarget.id}</strong> -- ${totalPts} pts across ${editParts.length} part(s). ${selText}.<br>` +
+      `Drag a point to move it. Click empty map to add a new point (after the selected one, or at the end if none selected).`;
+  }
+
+  function redrawEditHandles() {
+    editVertexLayer.clearLayers();
+    if (!editTarget) { updateEditStatus(); return; }
+
+    editParts.forEach((part, partIndex) => {
+      const latlngs = part.map(p => toLatLng(p.x, p.y, w, h));
+      const lineLatLngs = editTarget.closed ? latlngs.concat([latlngs[0]]) : latlngs;
+      if (lineLatLngs.length > 1) {
+        L.polyline(lineLatLngs, { color: '#ff9800', weight: 2, dashArray: '5,4', interactive: false }).addTo(editVertexLayer);
+      }
+      part.forEach((p, pointIndex) => {
+        const isSelected = !!editSelected && editSelected.partIndex === partIndex && editSelected.pointIndex === pointIndex;
+        const marker = L.marker(toLatLng(p.x, p.y, w, h), {
+          icon: vertexIcon(isSelected),
+          draggable: true
+        });
+        marker.on('click', (e) => {
+          L.DomEvent.stopPropagation(e);
+          editSelected = { partIndex, pointIndex };
+          redrawEditHandles();
+        });
+        marker.on('dragend', () => {
+          editParts[partIndex][pointIndex] = toPercent(marker.getLatLng());
+          editSelected = { partIndex, pointIndex };
+          redrawEditHandles();
+        });
+        marker.addTo(editVertexLayer);
+      });
+    });
+    updateEditStatus();
+  }
+
+  function loadBorderForEdit(id) {
+    const b = BORDERS.find(x => x.id === id);
+    if (!b) {
+      editTarget = null; editParts = []; editSelected = null;
+      redrawEditHandles();
+      return;
+    }
+    if (b.autoGenerate) {
+      alert("This border is auto-generated from its children and can't be edited directly -- edit its child borders instead.");
+      document.getElementById('edit-border-select').value = '';
+      editTarget = null; editParts = []; editSelected = null;
+      redrawEditHandles();
+      return;
+    }
+    editTarget = b;
+    const parts = Array.isArray(b.points[0]) ? b.points : [b.points];
+    editParts = parts.map(part => part.map(p => ({ x: p.x, y: p.y }))); // deep copy -- never mutate BORDERS directly
+    editSelected = null;
+    redrawEditHandles();
+  }
+
+  function deleteSelectedEditPoint() {
+    if (!editTarget) { alert('Choose a border to edit first.'); return; }
+    if (!editSelected) { alert('Click one of the point handles to select it first.'); return; }
+    const { partIndex, pointIndex } = editSelected;
+    const part = editParts[partIndex];
+    const minPoints = editTarget.closed ? 3 : 2;
+    if (part.length <= minPoints) {
+      alert(`Can't go below ${minPoints} points for this ${editTarget.closed ? 'region' : 'line'} part.`);
+      return;
+    }
+    part.splice(pointIndex, 1);
+    editSelected = null;
+    redrawEditHandles();
+  }
+
+  function insertEditPointAt(pt) {
+    if (!editTarget) return;
+    if (editSelected) {
+      const { partIndex, pointIndex } = editSelected;
+      editParts[partIndex].splice(pointIndex + 1, 0, pt);
+      editSelected = { partIndex, pointIndex: pointIndex + 1 }; // select the new point so you can keep chaining
+    } else {
+      const lastPartIndex = editParts.length - 1;
+      editParts[lastPartIndex].push(pt);
+      editSelected = { partIndex: lastPartIndex, pointIndex: editParts[lastPartIndex].length - 1 };
+    }
+    redrawEditHandles();
+  }
+
+  function copyEditedBorder() {
+    if (!editTarget) { alert('Choose a border to edit first.'); return; }
+    const pointsStr = editParts.length === 1
+      ? partToStr(editParts[0])
+      : `[\n      ${editParts.map(partToStr).join(',\n      ')}\n    ]`;
+    const esc = s => (s || '').replace(/"/g, '\\"');
+    const fields = [
+      `id: "${editTarget.id}"`,
+      `name: "${esc(editTarget.name)}"`,
+      `description: "${esc(editTarget.description)}"`,
+      `link: "${esc(editTarget.link)}"`,
+      editTarget.parent !== undefined ? `parent: ${editTarget.parent ? `"${editTarget.parent}"` : 'null'}` : null,
+      editTarget.autoGenerate ? `autoGenerate: true` : null,
+      `color: "${editTarget.color || '#5a3a2a'}"`,
+      `closed: ${!!editTarget.closed}`,
+      `weight: ${editTarget.weight ?? 2}`,
+      `dashArray: ${editTarget.dashArray ? `"${editTarget.dashArray}"` : 'null'}`,
+      `fillOpacity: ${editTarget.fillOpacity ?? 0.08}`,
+      `points: ${pointsStr}`
+    ].filter(Boolean).join(', ');
+    navigator.clipboard.writeText(`{ ${fields} }`);
+    alert(`Copied "${editTarget.name || editTarget.id}" -- paste this over the entry with the same id in map-data.js.`);
+  }
+
+  document.getElementById('edit-border-select').addEventListener('change', (e) => {
+    loadBorderForEdit(e.target.value);
+  });
+
+
   map.on('click', (e) => {
     const pt = toPercent(e.latlng);
     if (mode === 'point') {
       picked.push(pt);
       renderPointList();
-    } else {
+    } else if (mode === 'border') {
       drawing.push(pt);
       redrawPreview();
+    } else if (mode === 'edit') {
+      insertEditPointAt(pt);
     }
   });
 
@@ -709,6 +1019,12 @@ function buildCoordinatePicker(w, h) {
     } else if (id === 'border-clear') {
       finishedBorders.length = 0;
       renderBorderList();
+    } else if (id === 'edit-delete-point') {
+      deleteSelectedEditPoint();
+    } else if (id === 'edit-reset') {
+      if (editTarget) loadBorderForEdit(editTarget.id);
+    } else if (id === 'edit-copy') {
+      copyEditedBorder();
     }
   });
 }
