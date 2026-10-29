@@ -125,6 +125,25 @@ const MARKERS = [
        [ { x: 15, y: 30 }, { x: 42, y: 22 }, { x: 40, y: 60 } ],  // main body
        [ { x: 70, y: 10 }, { x: 78, y: 10 }, { x: 78, y: 18 } ]   // exclave
      ]
+
+   NESTED REGIONS (country > state > county, etc.): add a `parent`
+   field with another border's `id`. Parents automatically render
+   underneath their children (so children stay clickable), and a
+   child's popup shows the full breadcrumb, e.g. "Eastern Realm ›
+   Callow Province". There's no limit to nesting depth.
+
+   AUTO-GENERATED PARENT BORDERS: instead of manually tracing a
+   country's outline around a dozen states, set `autoGenerate: true`
+   on the parent and give it NO `points` at all. At render time it's
+   computed as the geometric union of every border whose `parent`
+   points at it -- so as you add/edit/remove state borders, the
+   country outline updates itself automatically. Example:
+
+     { id: "usa", name: "United States", autoGenerate: true,
+       color: "#2a6ebb", closed: true, weight: 2, dashArray: null,
+       fillOpacity: 0.05 },
+     { id: "ca", name: "California", parent: "usa", points: [...] },
+     { id: "nv", name: "Nevada",     parent: "usa", points: [...] }
    ------------------------------------------------------------ */
 const BORDERS = [
   {
