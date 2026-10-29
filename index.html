@@ -410,6 +410,13 @@ img.onload = function () {
     }
   });
 
+  // Parent outlines (e.g. an auto-generated country border) get their own
+  // pane stacked ABOVE the normal region polygons. Otherwise a parent's
+  // edge -- which coincides exactly with its children's outer edges -- is
+  // painted over by those children and never visible.
+  map.createPane('parentOutlines');
+  map.getPane('parentOutlines').style.zIndex = 450; // overlayPane is 400, markerPane is 600
+
   const borderLayer = L.layerGroup().addTo(map);
 
   // -- Hierarchy support (nested borders, e.g. country > state > county) --
@@ -571,6 +578,25 @@ img.onload = function () {
         if (popupContent) L.popup().setLatLng(e.latlng).setContent(popupContent).openOn(map);
       });
       layer.addTo(borderLayer);
+
+      // If this border has children, also draw its outline on top of them.
+      // Stroke only, non-interactive, so clicks/hover/popups still go to
+      // the children underneath. Lives in borderLayer so the legend's
+      // "Borders" toggle hides it too.
+      if (BORDERS.some(c => c.parent === b.id)) {
+        const outlineStyle = {
+          color: baseStyle.color,
+          weight: baseStyle.weight,
+          dashArray: baseStyle.dashArray,
+          fill: false,
+          interactive: false,
+          pane: 'parentOutlines'
+        };
+        const outline = b.closed
+          ? L.polygon(partsLatLngs.map(ring => [ring]), outlineStyle)
+          : L.polyline(partsLatLngs, outlineStyle);
+        outline.addTo(borderLayer);
+      }
     } catch (err) {
       const label = b && (b.name || b.id) || `#${idx + 1}`;
       reportDataWarning(`Border "${label}": ${err.message}`);
