@@ -625,7 +625,7 @@ function buildCoordinatePicker(w, h, editorState) {
   let editSelected = null;     // { partIndex, pointIndex } of the selected vertex, or null
   const editVertexLayer = L.layerGroup().addTo(map);
   const editBorderOptions = '<option value="">-- choose a border to edit --</option>' + BORDERS.map(b =>
-    `<option value="${b.id}">${(b.name || b.id)}${b.autoGenerate ? ' (auto-generated, read-only)' : ''}</option>`
+    `<option value="${b.id}">${b.id}${b.name && b.name !== b.id ? ' - ' + b.name : ''}${b.autoGenerate ? ' (auto-generated, read-only)' : ''}</option>`
   ).join('');
 
   const previewLayer = L.layerGroup().addTo(map);
