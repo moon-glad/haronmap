@@ -328,6 +328,125 @@ const img = new Image();
    entry should keep working, including the picker. Instead we
    skip just that entry and surface a visible warning banner.
    ============================================================ */
+/* SHAPE CODEC START */
+// Compact shape strings: integer pixel corners, delta-coded, zigzag, 5-bit
+// varints written with 64 URL-safe characters. Format:
+//   <gridW><gridH>:<ring>.<ring>.<ring>
+// Each ring is a run of (dx,dy) pairs; the first pair is relative to (0,0).
+// y counts down from the TOP of the grid image. Typical cost: ~2 characters
+// per vertex, against ~24 for { x: 52.323, y: 86.992 }.
+const _B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+const _B64I = {};
+for (let i = 0; i < 64; i++) _B64I[_B64[i]] = i;
+function _putVar(out, v) {
+  while (v >= 32) { out.push(_B64[(v % 32) + 32]); v = Math.floor(v / 32); }
+  out.push(_B64[v]);
+}
+const _zig = n => (n >= 0 ? n * 2 : -n * 2 - 1);
+const _unzig = n => (n % 2 === 0 ? n / 2 : -(n + 1) / 2);
+
+// rings: [[x0, y0, x1, y1, ...], ...] in grid pixel corners
+function encodeShape(rings, gw, gh) {
+  const out = [];
+  _putVar(out, gw); _putVar(out, gh);
+  out.push(':');
+  rings.forEach((r, ri) => {
+    if (ri) out.push('.');
+    let px = 0, py = 0;
+    for (let i = 0; i < r.length; i += 2) {
+      _putVar(out, _zig(r[i] - px)); _putVar(out, _zig(r[i + 1] - py));
+      px = r[i]; py = r[i + 1];
+    }
+  });
+  return out.join('');
+}
+
+// -> { gw, gh, rings: [[x0, y0, ...], ...] } (integer pixel corners)
+function decodeShapePx(s) {
+  let acc = 0, mul = 1, nums = [], head = null;
+  const rings = [];
+  const flush = () => {
+    if (nums.length) {
+      const r = []; let px = 0, py = 0;
+      for (let i = 0; i + 1 < nums.length; i += 2) { px += _unzig(nums[i]); py += _unzig(nums[i + 1]); r.push(px, py); }
+      rings.push(r);
+    }
+    nums = [];
+  };
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === ':') { head = nums; nums = []; continue; }
+    if (c === '.') { flush(); continue; }
+    const v = _B64I[c];
+    if (v === undefined) continue;
+    acc += (v % 32) * mul;
+    if (v >= 32) { mul *= 32; } else { nums.push(acc); acc = 0; mul = 1; }
+  }
+  flush();
+  return { gw: head ? head[0] : 0, gh: head ? head[1] : 0, rings };
+}
+
+// -> parts in the map's percent convention (x from the left, y from the BOTTOM)
+function decodeShape(s) {
+  const d = decodeShapePx(s);
+  return d.rings.map(r => {
+    const pts = [];
+    for (let i = 0; i < r.length; i += 2) pts.push({ x: r[i] / d.gw * 100, y: (1 - r[i + 1] / d.gh) * 100 });
+    return pts;
+  });
+}
+/* SHAPE CODEC END */
+
+
+/* ============================================================
+   COMPACT BORDERS
+   A border may give `shape: "..."` (see the codec above) instead of
+   `points`. Shapes are decoded once at load. Entries using `shape` also
+   inherit what they leave out, so generated data does not repeat it:
+     - closed defaults to true
+     - color comes from the nearest ancestor that has one
+     - weight 1 and fillOpacity 0.07 unless BORDER_DEFAULTS says otherwise
+   Entries written the old way (explicit `points` and fields) are untouched.
+   ============================================================ */
+function normalizeBorders() {
+  const defaults = Object.assign({ weight: 1, fillOpacity: 0.07 }, (typeof BORDER_DEFAULTS !== 'undefined' && BORDER_DEFAULTS) || {});
+  const byId = {};
+  BORDERS.forEach(b => { if (b.id) byId[b.id] = b; });
+  BORDERS.forEach(b => {
+    if (b.shape === undefined || b.shape === null) return;
+    if (!b.points) {
+      const d = decodeShapePx(b.shape);
+      if (!d.gw || !d.gh) throw new Error('shape string has no valid size header');
+      b._grid = [d.gw, d.gh];
+      const parts = d.rings.map(r => {
+        const pts = [];
+        for (let i = 0; i < r.length; i += 2) pts.push({ x: r[i] / d.gw * 100, y: (1 - r[i + 1] / d.gh) * 100 });
+        return pts;
+      });
+      b.points = parts.length === 1 ? parts[0] : parts;
+    }
+    if (b.closed === undefined) b.closed = true;
+    if (b.weight === undefined) b.weight = defaults.weight;
+    if (b.fillOpacity === undefined) b.fillOpacity = defaults.fillOpacity;
+  });
+  // inherit color down the parent chain (guarded against cycles)
+  BORDERS.forEach(b => {
+    if (b.color || b.shape === undefined) return;
+    let cur = b, hops = 0;
+    while (cur && !cur.color && hops++ < 50) cur = cur.parent ? byId[cur.parent] : null;
+    if (cur && cur.color) b.color = cur.color;
+  });
+}
+
+// percent parts -> integer pixel rings of a grid (the inverse of the decode above)
+function percentPartsToGridRings(parts, gw, gh) {
+  return parts.map(part => {
+    const r = [];
+    part.forEach(p => { r.push(Math.round(p.x / 100 * gw), Math.round((1 - p.y / 100) * gh)); });
+    return r;
+  });
+}
+
 let dataWarnings = [];
 function reportDataWarning(message) {
   console.error('[map data]', message);
@@ -417,12 +536,91 @@ img.onload = function () {
   map.createPane('parentOutlines');
   map.getPane('parentOutlines').style.zIndex = 450; // overlayPane is 400, markerPane is 600
 
+  // -- Optional pixel-perfect land mask (LAND_MASK in map-data.js) --------
+  // A PNG whose opaque pixels are land. Region shapes can then be loose
+  // past the coast: this SVG mask trims everything the border layers draw
+  // back to the exact coastline. Without LAND_MASK none of this runs.
+  const LAND_MASK_URL = (typeof LAND_MASK !== 'undefined' && LAND_MASK) ? LAND_MASK : null;
+  let borderRenderer, outlineRenderer, maskPixels = null, maskDisabled = false;
+
+  function attachLandMask(renderer) {
+    const NS = 'http://www.w3.org/2000/svg', XL = 'http://www.w3.org/1999/xlink';
+    const id = 'land-mask-' + L.Util.stamp(renderer);
+    // Fires after the renderer positions its <svg> (on add, pan and zoom), so
+    // the mask image is always re-fitted to the map image in layer coordinates.
+    renderer.on('update', () => {
+      const svg = renderer._container, group = renderer._rootGroup;
+      if (!svg || !group) return;
+      if (maskDisabled) { group.removeAttribute('mask'); return; } // mask image failed to load
+      let mask = svg.querySelector('mask');
+      if (!mask) {
+        const defs = document.createElementNS(NS, 'defs');
+        mask = document.createElementNS(NS, 'mask');
+        mask.setAttribute('id', id);
+        mask.setAttribute('maskUnits', 'userSpaceOnUse');
+        const image = document.createElementNS(NS, 'image');
+        image.setAttribute('preserveAspectRatio', 'none');
+        image.setAttribute('href', LAND_MASK_URL);
+        image.setAttributeNS(XL, 'href', LAND_MASK_URL);
+        image.style.imageRendering = 'pixelated'; // match the pixelated base map when zoomed in
+        mask.appendChild(image);
+        defs.appendChild(mask);
+        svg.insertBefore(defs, svg.firstChild);
+        group.setAttribute('mask', 'url(#' + id + ')');
+      }
+      const tl = map.latLngToLayerPoint([h, 0]), br = map.latLngToLayerPoint([0, w]);
+      const box = { x: tl.x, y: tl.y, width: br.x - tl.x, height: br.y - tl.y };
+      Object.keys(box).forEach(k => { mask.setAttribute(k, box[k]); mask.firstChild.setAttribute(k, box[k]); });
+    });
+  }
+
+  if (LAND_MASK_URL) {
+    map.createPane('borderFills');
+    map.getPane('borderFills').style.zIndex = 400;
+    borderRenderer = L.svg({ pane: 'borderFills', padding: 0.3 });
+    outlineRenderer = L.svg({ pane: 'parentOutlines', padding: 0.3 });
+    attachLandMask(borderRenderer);
+    attachLandMask(outlineRenderer);
+
+    // Shapes extend a little past the coast, and SVG masks only affect
+    // painting, not hit-testing. So read the mask once and ignore clicks that
+    // land on that invisible overhang.
+    const mi = new Image();
+    mi.onload = () => {
+      try {
+        const c = document.createElement('canvas');
+        c.width = mi.naturalWidth; c.height = mi.naturalHeight;
+        const ctx = c.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(mi, 0, 0);
+        ctx.getImageData(0, 0, 1, 1); // throws if the canvas is tainted (e.g. opened from file://)
+        maskPixels = { ctx, w: c.width, h: c.height };
+      } catch (e) { maskPixels = null; }
+    };
+    // A mask that fails to load would hide every border, so fall back to
+    // drawing without it and say why.
+    mi.onerror = () => {
+      maskDisabled = true;
+      [borderRenderer, outlineRenderer].forEach(r => { if (r && r._rootGroup) r._rootGroup.removeAttribute('mask'); });
+      reportDataWarning(`LAND_MASK image "${LAND_MASK_URL}" could not be loaded, so borders are drawn without it. Check the path in map-data.js.`);
+    };
+    mi.src = LAND_MASK_URL;
+  }
+  function isLandAt(latlng) {
+    if (!maskPixels) return true;
+    const x = Math.floor(latlng.lng / w * maskPixels.w), y = Math.floor((h - latlng.lat) / h * maskPixels.h);
+    if (x < 0 || y < 0 || x >= maskPixels.w || y >= maskPixels.h) return false;
+    try { return maskPixels.ctx.getImageData(x, y, 1, 1).data[3] > 0; } catch (e) { return true; }
+  }
+
   const borderLayer = L.layerGroup().addTo(map);
 
   // -- Hierarchy support (nested borders, e.g. country > state > county) --
   // A border can optionally set `parent: "someOtherBorderId"`. We use that
   // to (a) draw parents first so children render on top and stay
   // clickable, and (b) build a breadcrumb for the popup.
+  try { normalizeBorders(); }
+  catch (err) { reportDataWarning(`Border data: ${err.message}`); }
+
   const bordersById = {};
   BORDERS.forEach(b => { if (b.id) bordersById[b.id] = b; });
 
@@ -545,6 +743,7 @@ img.onload = function () {
         fillColor: b.color || "#5a3a2a",
         fillOpacity: b.closed ? (b.fillOpacity ?? 0.08) : 0
       };
+      if (borderRenderer) baseStyle.renderer = borderRenderer;
       const hoverStyle = {
         weight: (b.weight || 2) + 1.5,
         fillOpacity: b.closed ? (b.fillOpacity ?? 0.08) * 3.5 : 0
@@ -574,6 +773,7 @@ img.onload = function () {
       // a region doesn't open its popup and lets the click reach the map.
       layer.on('click', (e) => {
         if (editorState.clickThrough) return;
+        if (!isLandAt(e.latlng)) return; // the click hit the part trimmed away by the land mask
         L.DomEvent.stopPropagation(e);
         if (popupContent) L.popup().setLatLng(e.latlng).setContent(popupContent).openOn(map);
       });
@@ -592,6 +792,7 @@ img.onload = function () {
           interactive: false,
           pane: 'parentOutlines'
         };
+        if (outlineRenderer) outlineStyle.renderer = outlineRenderer;
         const outline = b.closed
           ? L.polygon(partsLatLngs.map(ring => [ring]), outlineStyle)
           : L.polyline(partsLatLngs, outlineStyle);
@@ -969,6 +1170,24 @@ function buildCoordinatePicker(w, h, editorState) {
       ? partToStr(editParts[0])
       : `[\n      ${editParts.map(partToStr).join(',\n      ')}\n    ]`;
     const esc = s => (s || '').replace(/"/g, '\\"');
+    if (editTarget._grid) {
+      // This border came from a compact shape: write it back the same way, with only what differs.
+      const [gw, gh] = editTarget._grid;
+      const hasParent = editTarget.parent !== undefined && editTarget.parent !== null;
+      const compactFields = [
+        `id: "${editTarget.id}"`,
+        `name: "${esc(editTarget.name)}"`,
+        editTarget.description ? `description: "${esc(editTarget.description)}"` : null,
+        editTarget.link ? `link: "${esc(editTarget.link)}"` : null,
+        hasParent ? `parent: "${editTarget.parent}"` : null,
+        !hasParent ? `color: "${editTarget.color || '#5a3a2a'}"` : null,
+        !hasParent ? `closed: true, weight: ${editTarget.weight ?? 2}, fillOpacity: ${editTarget.fillOpacity ?? 0.08}` : null,
+        `shape: "${encodeShape(percentPartsToGridRings(editParts, gw, gh), gw, gh)}"`
+      ].filter(Boolean).join(', ');
+      navigator.clipboard.writeText(`{ ${compactFields} }`);
+      alert(`Copied "${editTarget.name || editTarget.id}" (compact) -- paste this over the entry with the same id in map-data.js.`);
+      return;
+    }
     const fields = [
       `id: "${editTarget.id}"`,
       `name: "${esc(editTarget.name)}"`,
