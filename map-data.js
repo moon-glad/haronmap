@@ -75,7 +75,7 @@ const MARKERS = [
   { id: "m3", x: 35.5, y: 22.6, group: "capital", name: "Unnamed", description: "", link: "" },
   { id: "m4", x: 64.5, y: 23.1, group: "capital", name: "Unnamed", description: "", link: "" },
   { id: "m5", x: 56.8, y: 24.1, group: "capital", name: "Unnamed", description: "", link: "" },
-  { id: "m6", x: 57.5, y: 32.2, group: "capital", name: "Unnamed", description: "", link: "" },
+  { id: "m6", x: 57.5, y: 32.2, group: "capital", name: "Ingley", description: "Capital of Orenlang and traditional center of the Lish'ta thought-faith.", link: "" },
   { id: "m7", x: 57.7, y: 39.1, group: "capital", name: "Unnamed", description: "", link: "" },
   { id: "m8", x: 57.4, y: 43.7, group: "capital", name: "Unnamed", description: "", link: "" },
   { id: "m9", x: 50.3, y: 37.7, group: "capital", name: "Petha Sill", description: "The imperial capital and seat of the House of Ëgret.", link: "" },
